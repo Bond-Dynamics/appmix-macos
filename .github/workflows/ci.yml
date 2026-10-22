@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, release]
+  push:
+    branches: [main]
+
+jobs:
+  # The bot-generated main->release promotion PR (release-pr.yml) keeps its head at `main`, so every
+  # commit merged to `main` while it's open fires this workflow twice for the identical commit SHA:
+  # once from `push` on `main`, once from `pull_request` `synchronize` on that PR. The second run
+  # tests nothing the first didn't already cover. `release` has no required status checks here, so
+  # skipping outright is safe -- no synthetic status needs to be reported (see azoth-backend#700 for
+  # the cross-repo audit and the fuller version of this fix on a repo where a check IS required).
+  ci:
+    if: |
+      !(github.event_name == 'pull_request' && github.head_ref == 'main' && github.base_ref == 'release')
+    uses: Bond-Dynamics/.github/.github/workflows/ci-swift.yml@main
+    with:
+      # The package targets macOS 15 (Synchronization atomics), so its tests cannot launch on the
+      # reusable's default macos-14 image. Same per-minute rate as macos-14.
+      runner: macos-15
