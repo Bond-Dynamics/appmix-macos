@@ -10,7 +10,7 @@ struct MixerPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if model.rows.isEmpty {
-                Text("No apps are playing audio.")
+                Text(model.showIdleApps ? "No apps are using audio." : "No apps are playing audio.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 18)
@@ -45,6 +45,8 @@ struct MixerPanel: View {
             Text("Apps play normally until you change them. Changes are remembered.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Toggle("Show apps that aren't playing", isOn: Binding(get: { model.showIdleApps }, set: { model.setShowIdleApps($0) }))
+                .toggleStyle(.checkbox)
             loginItemControls
             HStack {
                 Button("Audio permission…") { model.openPermissionSettings() }
