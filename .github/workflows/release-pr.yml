@@ -1,0 +1,124 @@
+# Opens - or refreshes - this repo's `main -> release` pull request, on demand.
+#
+# BOND-220. `release` is the branch `release-tag.yml` publishes from: merging this PR is what
+# builds, notarizes and attaches a new `AppMix-<VERSION>.dmg` to a GitHub Release.
+#
+# Copied from `swift-http-dsl/.github/workflows/release-pr.yml` (BOND-18), which adapts
+# `composition-uuid-swift`'s (FORGE-2188) — same pattern, not a new design. It opens and
+# updates. It never merges and never closes anything.
+#
+# The PR this opens **does** carry checks: `ci.yml` runs on `pull_request` to both `main`
+# and `release` and emits the `CI Success` aggregator, so the promotion is gated by the same
+# jobs as any other change.
+#
+# TOKEN: this mints a bond-dynamics-ci App token rather than using the built-in
+# GITHUB_TOKEN, and that is a requirement rather than a preference. The org has "Allow
+# GitHub Actions to create and approve pull requests" turned off, so GITHUB_TOKEN hits
+# "GitHub Actions is not permitted to create or approve pull requests" at the create step.
+# CI_APP_ID / CI_APP_PRIVATE_KEY are org secrets with visibility=all and the app is
+# installed org-wide, so this needs no per-repo setup.
+
+name: Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the title and body and print them, but create/edit nothing"
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-pr
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  HEAD_BRANCH: main
+  BASE_BRANCH: release
+
+jobs:
+  release-pr:
+    name: Open or refresh main -> release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Mint a bond-dynamics-ci token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
+      - name: Open or refresh the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin "$HEAD_BRANCH" "$BASE_BRANCH" --quiet
+
+          version="$(tr -d '[:space:]' < VERSION)"
+          ahead="$(git rev-list --count "origin/$BASE_BRANCH..origin/$HEAD_BRANCH")"
+
+          if [ "$ahead" -eq 0 ]; then
+            echo "::notice::$HEAD_BRANCH is not ahead of $BASE_BRANCH. Nothing to promote."
+            exit 0
+          fi
+
+          # Whether this promotion actually publishes anything. A release PR that does not
+          # move VERSION is legitimate - promoting a docs or CI fix - but it publishes no
+          # new version, and the title should not imply otherwise.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1; then
+            effect="Republishes nothing — \`v$version\` is already tagged. Bump \`VERSION\` first if this should publish."
+            title="chore(release): promote $ahead commit(s) — no version bump"
+          else
+            effect="Merging this publishes **\`v$version\`** via \`release-tag.yml\`: a notarized \`AppMix-$version.dmg\` attached to a GitHub Release."
+            title="chore(release): publish v$version"
+          fi
+
+          {
+            echo "## What this promotes"
+            echo
+            echo "$effect"
+            echo
+            echo "\`$HEAD_BRANCH\` is **$ahead commit(s)** ahead of \`$BASE_BRANCH\`."
+            echo
+            echo "## Commits"
+            echo
+            git log --no-merges --pretty=format:'- %s (`%h`)' \
+              "origin/$BASE_BRANCH..origin/$HEAD_BRANCH"
+            echo
+            echo
+            echo "## Before merging"
+            echo
+            echo "- \`CI Success\` must be green."
+            echo "- A published release is what people have downloaded, so \`release-tag.yml\` refuses to move a tag that already exists."
+            echo
+            echo "<sub>Opened by \`.github/workflows/release-pr.yml\` (BOND-220).</sub>"
+          } > /tmp/body.md
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "--- title ---"; echo "$title"
+            echo "--- body ---"; cat /tmp/body.md
+            exit 0
+          fi
+
+          existing="$(gh pr list --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+            --state open --json number --jq '.[0].number // empty')"
+
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body-file /tmp/body.md
+            echo "::notice::Refreshed #$existing"
+          else
+            gh pr create --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
+              --title "$title" --body-file /tmp/body.md
+          fi

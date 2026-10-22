@@ -1,0 +1,200 @@
+# Publishes a version of AppMix: tags `release` and attaches a notarized DMG to a GitHub Release.
+#
+# BOND-220. Adapted from `swift-http-dsl/.github/workflows/release-tag.yml` (BOND-18, itself from
+# `composition-uuid-swift`, FORGE-2188): same VERSION-is-the-only-source rule and the same refusal
+# to move a published tag. The difference is that a Swift package's tag *is* the release, while an
+# app needs an artifact: a Developer ID-signed, notarized, stapled `AppMix-<VERSION>.dmg`.
+#
+# The version is read from `VERSION` rather than typed into a dispatch input. That file moves
+# through the same `main -> release` pull request as the code, so the number that ships is the
+# number someone reviewed.
+#
+# Re-running on an unchanged `release` is a no-op, not a failure: the cheap `check` job on Linux
+# decides, and the macOS `publish` job only starts when there is a new version to build.
+#
+# Secrets (repo-level; values never in the repo):
+#   APPLE_DEVID_CERT_P12_BASE64, APPLE_DEVID_CERT_PASSWORD   Developer ID Application cert + key
+#   APPLE_ASC_KEY_ID, APPLE_ASC_ISSUER_ID, APPLE_ASC_PRIVATE_KEY   App Store Connect API key (notarytool)
+
+name: Release Tag
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Resolve the version and print what would be published, but build and tag nothing"
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.exists.outputs.already == 'false' && inputs.dry_run != true }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags are needed to answer "does this one already exist", and the default
+          # checkout fetches none of them.
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ ! -f VERSION ]; then
+            echo "::error::VERSION is missing. It is the only source for the tag."
+            exit 1
+          fi
+          raw="$(tr -d '[:space:]' < VERSION)"
+          # Anchored, and no leading `v`: the file holds the bare semver and this workflow
+          # owns the prefix, so the tag shape cannot drift with whoever edits the file.
+          if ! printf '%s' "$raw" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::VERSION is '$raw', which is not a semver this workflow will tag."
+            exit 1
+          fi
+          echo "version=$raw" >> "$GITHUB_OUTPUT"
+          echo "tag=v$raw" >> "$GITHUB_OUTPUT"
+          echo "Resolved v$raw"
+
+      - name: Check whether that tag already exists
+        id: exists
+        run: |
+          set -euo pipefail
+          tag='${{ steps.version.outputs.tag }}'
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag is already published. Bump VERSION on main and promote again to publish a new one."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+            echo "$tag is new."
+          fi
+
+  publish:
+    name: Build, notarize and release
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    # Signing, notarytool, stapler and dmgbuild's hdiutil all need macOS. Runs once per new
+    # version only; standard runners are free for public repos.
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode (Swift toolchain)
+        run: |
+          set -euo pipefail
+          APP=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "${APP:-}" ] || { echo "::error::No Xcode 16 on this runner"; exit 1; }
+          sudo xcode-select -s "$APP"
+          swift --version
+
+      - name: Import the Developer ID certificate into a throwaway keychain
+        id: signing
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_DEVID_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVID_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$CERT_P12_BASE64" ] || { echo "::error::APPLE_DEVID_CERT_P12_BASE64 is not set on this repo."; exit 1; }
+          keychain="$RUNNER_TEMP/appmix-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/devid.p12"
+          # The intermediate that issues Developer ID certs, so codesign can build the chain
+          # even when the exported .p12 holds only the leaf.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain" || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          # bash 3.2-safe (no mapfile): keep the runner's existing keychains searchable too.
+          existing=()
+          while IFS= read -r line; do existing+=("$line"); done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"$/\1/')
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -nE 's/.*"(Developer ID Application: [^"]+)".*/\1/p' | head -1)"
+          [ -n "$identity" ] || { echo "::error::No 'Developer ID Application' identity in the imported certificate."; exit 1; }
+          echo "Signing as: $identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+
+      - name: Write the App Store Connect API key
+        id: asc
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.APPLE_ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$ASC_PRIVATE_KEY" ] || { echo "::error::APPLE_ASC_PRIVATE_KEY is not set on this repo."; exit 1; }
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$ASC_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          echo "path=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Install dmgbuild
+        run: python3 -m pip install --quiet --break-system-packages "dmgbuild==1.6.5"
+
+      - name: Build, sign, notarize and package
+        env:
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          ASC_KEY_PATH: ${{ steps.asc.outputs.path }}
+          ASC_KEY_ID: ${{ secrets.APPLE_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPLE_ASC_ISSUER_ID }}
+          # As a module, so it does not matter which bin directory pip put the script in.
+          DMGBUILD: python3 -m dmgbuild
+        run: scripts/release/package-dmg.sh
+
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dmg="dist/AppMix-$VERSION.dmg"
+          [ -f "$dmg" ] || { echo "::error::$dmg was not produced."; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Annotated, not lightweight: an annotated tag records who published and when.
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          ## Install
+
+          1. Download **AppMix-$VERSION.dmg** below and open it.
+          2. Drag **AppMix** onto **Applications**.
+          3. Open AppMix from Applications. It lives in the menu bar (the slider icon).
+          4. The first time you change an app's volume, macOS asks to let AppMix record system audio. Allow it.
+
+          Requires macOS 15 or later. Signed with Developer ID and notarized by Apple.
+          EOF
+          gh release create "$TAG" "$dmg" \
+            --title "AppMix $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --generate-notes \
+            --verify-tag
+          echo "### Published AppMix $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the keychain and API key
+        if: always()
+        run: |
+          security delete-keychain "${{ steps.signing.outputs.keychain }}" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/devid.p12"
