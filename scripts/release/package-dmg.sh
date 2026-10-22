@@ -46,6 +46,18 @@ notarize_file() {
   fi
 }
 
+# Gatekeeper's verdict on the finished DMG, as a downloading Mac would see it. Retries a network failure.
+assess_dmg() {
+  local file="$1" attempt
+  for attempt in 1 2 3; do
+    spctl -a -t open --context context:primary-signature -vv "$file" >&2 && return 0
+    echo "spctl assessment attempt $attempt failed; retrying" >&2
+    sleep $(( attempt * 10 ))
+  done
+  echo "package-dmg.sh: Gatekeeper rejected ${file:t}" >&2
+  exit 1
+}
+
 app="$("$root/scripts/make-app.sh" --universal)"
 echo "Built $(lipo -archs "$app/Contents/MacOS/AppMixBar") app: $app" >&2
 
@@ -66,8 +78,10 @@ if $notarize; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg" >&2
   notarize_file "$dmg"
   xcrun stapler staple "$dmg" >&2
-  xcrun stapler validate "$dmg" >&2
-  spctl -a -t open --context context:primary-signature -vv "$dmg" >&2
+  # `stapler staple` already validates the ticket it attaches. A separate `stapler validate` looks the
+  # ticket up online and failed twice on GitHub's macOS runner with NSURLError -1005 (BOND-220), so the
+  # final gate is Gatekeeper's own assessment, retried briefly in case the runner's network blips.
+  assess_dmg "$dmg"
 fi
 
 echo "$dmg"
