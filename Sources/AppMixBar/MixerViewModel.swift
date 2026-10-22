@@ -11,6 +11,8 @@ struct AppRowModel: Identifiable, Equatable {
     let settings: AppSettings
     let isRouted: Bool
     let error: String?
+    /// Set when the app's chosen output is muted or at 0%, so the app would be silent.
+    let outputWarning: String?
 }
 
 /// Bridges the controller to SwiftUI: snapshots arrive from the monitor, edits go to the controller,
@@ -25,6 +27,7 @@ final class MixerViewModel {
     private static let permissionSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
 
     private(set) var rows: [AppRowModel] = []
+    private(set) var deviceRows: [DeviceVolumeRow] = []
     private(set) var devices: [AudioOutputDevice] = []
     private(set) var defaultOutputName = ""
     /// Linear output peak per routed app, refreshed while the panel is open.
@@ -34,6 +37,7 @@ final class MixerViewModel {
 
     @ObservationIgnored private let userFacing: UserFacingApps
     @ObservationIgnored private let controller: MixerController
+    @ObservationIgnored private let deviceMixer = DeviceMixer(control: CoreAudioDeviceVolume())
     @ObservationIgnored private var monitor: SystemAudioMonitor?
     @ObservationIgnored private var meterTimer: Timer?
 
@@ -57,6 +61,12 @@ final class MixerViewModel {
     func setMuted(_ muted: Bool, for key: String) { edit { controller.setMuted(muted, for: key) } }
     func setOutput(_ uid: String?, for key: String) { edit { controller.setOutput(uid, for: key) } }
     func reset(_ key: String) { edit { controller.reset(key) } }
+
+    func setDeviceVolume(_ percent: Double, for uid: String) { edit { deviceMixer.setVolume(percent, for: uid) } }
+    func setDeviceMuted(_ muted: Bool, for uid: String) { edit { deviceMixer.setMuted(muted, for: uid) } }
+    func setDeviceEditing(_ isEditing: Bool, for uid: String) {
+        isEditing ? deviceMixer.beginEditing(uid) : deviceMixer.endEditing(uid)
+    }
 
     func setShowIdleApps(_ show: Bool) {
         showIdleApps = show
@@ -88,10 +98,21 @@ final class MixerViewModel {
         NSApplication.shared.terminate(nil)
     }
 
+    /// A volume-only snapshot (volume keys, a knob, a device slider) skips the app reconcile, which could
+    /// otherwise retry a failed route on every key press.
     private func apply(_ snapshot: AudioSnapshot) {
-        userFacing.refresh(from: snapshot.processes)
-        controller.update(snapshot)
+        let volumesOnly = snapshot.differsOnlyInVolumes(from: controller.snapshot)
+        if !volumesOnly {
+            userFacing.refresh(from: snapshot.processes)
+            controller.update(snapshot)
+        }
+        deviceMixer.update(snapshot)
+        let previousDevices = deviceRows
         rebuildRows()
+        if deviceRows != previousDevices {
+            Self.log.info("Devices: \(Self.describe(self.deviceRows), privacy: .public)")
+        }
+        guard !volumesOnly else { return }
         let names = rows.map { "\($0.name)\($0.isPlaying ? "" : " (not playing)")" }.joined(separator: ", ")
         Self.log.info("Rows (show idle \(self.showIdleApps, privacy: .public)): \(names, privacy: .public)")
     }
@@ -107,9 +128,19 @@ final class MixerViewModel {
         })
     }
 
+    private static func describe(_ rows: [DeviceVolumeRow]) -> String {
+        rows.map { row in
+            let volume = row.volume.percent.map { "\(Int($0.rounded()))%\(row.volume.canSetVolume ? "" : " read-only")" } ?? "fixed"
+            let muted = row.volume.isMuted == true ? " muted" : ""
+            return "\(row.name) \(volume)\(muted)\(row.isDefault ? " (default)" : "")"
+        }
+        .joined(separator: ", ")
+    }
+
     private func rebuildRows() {
         let snapshot = controller.snapshot
         devices = snapshot.devices
+        deviceRows = deviceMixer.rows
         defaultOutputName = snapshot.devices.first { $0.uid == snapshot.defaultOutputUID }?.name ?? "none"
         rows = controller.apps
             .map { app in
@@ -120,7 +151,8 @@ final class MixerViewModel {
                     isPlaying: app.isPlaying,
                     settings: controller.settings(for: app.key),
                     isRouted: controller.isRouted(app.key),
-                    error: controller.error(for: app.key)
+                    error: controller.error(for: app.key),
+                    outputWarning: deviceMixer.warning(forOutputUID: controller.settings(for: app.key).outputUID)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
