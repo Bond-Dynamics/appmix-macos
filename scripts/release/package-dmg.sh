@@ -46,6 +46,20 @@ notarize_file() {
   fi
 }
 
+# Attaches Apple's notarization ticket. `stapler` fetches it from api.apple-cloudkit.com, which drops
+# connections intermittently from GitHub's macOS runners (NSURLError -1005, three runs in BOND-220), so
+# retry with backoff. Re-stapling an already stapled file is harmless.
+staple_with_retry() {
+  local file="$1" attempt
+  for attempt in 1 2 3 4 5; do
+    xcrun stapler staple "$file" >&2 && return 0
+    echo "stapler attempt $attempt for ${file:t} failed; retrying" >&2
+    sleep $(( attempt * 10 ))
+  done
+  echo "package-dmg.sh: could not staple ${file:t} after 5 attempts" >&2
+  exit 1
+}
+
 # Gatekeeper's verdict on the finished DMG, as a downloading Mac would see it. Retries a network failure.
 assess_dmg() {
   local file="$1" attempt
@@ -66,7 +80,7 @@ if $notarize; then
   ditto -c -k --keepParent "$app" "$zip"
   notarize_file "$zip"
   rm -f "$zip"
-  xcrun stapler staple "$app" >&2
+  staple_with_retry "$app"
 fi
 
 rm -f "$dmg"
@@ -77,7 +91,7 @@ ${=dmgbuild} -s "$root/scripts/dmg/settings.py" \
 if $notarize; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg" >&2
   notarize_file "$dmg"
-  xcrun stapler staple "$dmg" >&2
+  staple_with_retry "$dmg"
   # `stapler staple` already validates the ticket it attaches. A separate `stapler validate` looks the
   # ticket up online and failed twice on GitHub's macOS runner with NSURLError -1005 (BOND-220), so the
   # final gate is Gatekeeper's own assessment, retried briefly in case the runner's network blips.
