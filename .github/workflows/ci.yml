@@ -1,0 +1,66 @@
+name: CI
+
+# Inlined copy of Bond-Dynamics/.github `ci-swift.yml` (origin/main 3dbca36), not a call to it:
+# this repo is public and GitHub does not let a public repo use workflows from the private
+# `.github` repo (BOND-220). Same jobs, same commands, same `CI Success` aggregator name. Re-sync
+# by hand if the org workflow changes. Standard GitHub-hosted runners are free for public repos.
+
+on:
+  pull_request:
+    branches: [main, release]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Test
+    # Skip the duplicate run on the bot's main->release promotion PR: its head is `main`, which
+    # the `push` trigger has already tested at the same SHA (see azoth-backend#700).
+    if: |
+      !(github.event_name == 'pull_request' && github.head_ref == 'main' && github.base_ref == 'release')
+    # The package targets macOS 15 (Synchronization atomics); tests cannot launch on macos-14.
+    runs-on: macos-15
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode (Swift toolchain)
+        env:
+          XCODE_VERSION: "16"
+        run: |
+          set -euo pipefail
+          APP=$(ls -d /Applications/Xcode_"$XCODE_VERSION"*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "${APP:-}" ]; then
+            echo "::error::No Xcode matching '$XCODE_VERSION' on this runner"; ls -d /Applications/Xcode_*.app || true; exit 1
+          fi
+          echo "Selecting $APP"
+          sudo xcode-select -s "$APP"
+          swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  ci-success:
+    name: CI Success
+    needs: [build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify the Build & Test job succeeded
+        run: |
+          set -euo pipefail
+          BUILD="${{ needs.build.result }}"
+          echo "build: $BUILD"
+          if [ "$BUILD" = "skipped" ]; then
+            echo "Skipped -- duplicate of the push-triggered run on the same commit (main->release promotion PR)."
+            exit 0
+          fi
+          if [ "$BUILD" != "success" ]; then
+            echo "::error::build must succeed (got $BUILD)"; exit 1
+          fi
+          echo "All required jobs green."
