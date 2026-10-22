@@ -26,7 +26,7 @@ struct MixerPanel: View {
             model.startMeters()
             loginItem.refresh()
         }
-        .onDisappear(perform: model.stopMeters)
+        .onDisappear { model.stopMeters() }
     }
 
     private var header: some View {
@@ -47,11 +47,11 @@ struct MixerPanel: View {
                 .foregroundStyle(.secondary)
             loginItemControls
             HStack {
-                Button("Audio permission…", action: model.openPermissionSettings)
+                Button("Audio permission…") { model.openPermissionSettings() }
                     .buttonStyle(.link)
                     .font(.caption)
                 Spacer()
-                Button("Quit AppMix", action: model.quit)
+                Button("Quit AppMix") { model.quit() }
                     .controlSize(.small)
             }
         }
@@ -59,10 +59,10 @@ struct MixerPanel: View {
 
     @ViewBuilder
     private var loginItemControls: some View {
-        Toggle("Launch at login", isOn: Binding(get: { loginItem.isOn }, set: loginItem.setEnabled))
+        Toggle("Launch at login", isOn: Binding(get: { loginItem.isOn }, set: { loginItem.setEnabled($0) }))
             .toggleStyle(.checkbox)
         if loginItem.state == .needsApproval {
-            Button("Allow AppMix in Login Items…", action: loginItem.openLoginItemsSettings)
+            Button("Allow AppMix in Login Items…") { loginItem.openLoginItemsSettings() }
                 .buttonStyle(.link)
                 .font(.caption)
         }
