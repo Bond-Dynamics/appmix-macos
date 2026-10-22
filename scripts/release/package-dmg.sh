@@ -35,12 +35,12 @@ fi
 
 # Submits a file to Apple's notary service, waits, and fails with Apple's log if not accepted.
 notarize_file() {
-  local file="$1" result status id
+  local file="$1" result verdict id
   result="$(xcrun notarytool submit "$file" "${notary_auth[@]}" --wait --timeout 30m --output-format json)"
-  status="$(plutil -extract status raw - <<< "$result")"
+  verdict="$(plutil -extract status raw - <<< "$result")"
   id="$(plutil -extract id raw - <<< "$result")"
-  echo "Notarization of ${file:t}: $status (submission $id)" >&2
-  if [[ "$status" != "Accepted" ]]; then
+  echo "Notarization of ${file:t}: $verdict (submission $id)" >&2
+  if [[ "$verdict" != "Accepted" ]]; then
     xcrun notarytool log "$id" "${notary_auth[@]}" >&2 || true
     exit 1
   fi
