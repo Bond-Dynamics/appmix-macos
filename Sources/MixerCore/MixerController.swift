@@ -16,11 +16,26 @@ public struct AudioSnapshot: Equatable, Sendable {
     public let processes: [AudioProcess]
     public let devices: [AudioOutputDevice]
     public let defaultOutputUID: String
+    /// Each output device's own volume and mute, keyed by UID. A device missing here has a fixed volume.
+    public let deviceVolumes: [String: DeviceVolume]
 
-    public init(processes: [AudioProcess], devices: [AudioOutputDevice], defaultOutputUID: String) {
+    public init(
+        processes: [AudioProcess], devices: [AudioOutputDevice], defaultOutputUID: String,
+        deviceVolumes: [String: DeviceVolume] = [:]
+    ) {
         self.processes = processes
         self.devices = devices
         self.defaultOutputUID = defaultOutputUID
+        self.deviceVolumes = deviceVolumes
+    }
+
+    func with(deviceVolumes: [String: DeviceVolume]) -> AudioSnapshot {
+        AudioSnapshot(processes: processes, devices: devices, defaultOutputUID: defaultOutputUID, deviceVolumes: deviceVolumes)
+    }
+
+    /// Only device volume or mute changed: apps, devices and the default output are the same.
+    public func differsOnlyInVolumes(from other: AudioSnapshot) -> Bool {
+        processes == other.processes && devices == other.devices && defaultOutputUID == other.defaultOutputUID
     }
 }
 

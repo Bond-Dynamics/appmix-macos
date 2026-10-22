@@ -12,6 +12,12 @@ struct AppRowView: View {
             if row.isRouted {
                 LevelMeter(peak: model.levels[row.id] ?? 0)
             }
+            if let warning = row.outputWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.leading, 26)
+            }
             if let error = row.error {
                 Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2)
             }
