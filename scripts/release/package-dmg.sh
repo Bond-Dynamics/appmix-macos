@@ -4,7 +4,9 @@
 #
 # Env:
 #   SIGN_IDENTITY        "Developer ID Application: ..." (required to notarize; default "-" = ad-hoc)
-#   ASC_KEY_PATH         App Store Connect API key file (AuthKey_<id>.p8), for notarytool
+#   Notarization credentials, one of:
+#   NOTARY_PROFILE       a keychain profile saved with `xcrun notarytool store-credentials` (local builds)
+#   ASC_KEY_PATH         App Store Connect API key file (AuthKey_<id>.p8) (CI)
 #   ASC_KEY_ID           its key id
 #   ASC_ISSUER_ID        its issuer id
 #   DMGBUILD             dmgbuild command, may be several words (default: dmgbuild; CI: python3 -m dmgbuild, pinned 1.6.5)
@@ -17,22 +19,29 @@ dmgbuild="${DMGBUILD:-dmgbuild}"
 notarize=true
 [[ "${1:-}" == "--skip-notarize" ]] && notarize=false
 
+notary_auth=()
 if $notarize; then
-  for var in SIGN_IDENTITY ASC_KEY_PATH ASC_KEY_ID ASC_ISSUER_ID; do
-    [[ -n "${(P)var:-}" && "${(P)var}" != "-" ]] || { echo "package-dmg.sh: $var is required to notarize (or pass --skip-notarize)" >&2; exit 64; }
+  required=(SIGN_IDENTITY)
+  if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+    notary_auth=(--keychain-profile "$NOTARY_PROFILE")
+  else
+    required+=(ASC_KEY_PATH ASC_KEY_ID ASC_ISSUER_ID)
+  fi
+  for var in $required; do
+    [[ -n "${(P)var:-}" && "${(P)var}" != "-" ]] || { echo "package-dmg.sh: $var is required to notarize (or set NOTARY_PROFILE, or pass --skip-notarize)" >&2; exit 64; }
   done
+  (( ${#notary_auth} )) || notary_auth=(--key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
 fi
 
 # Submits a file to Apple's notary service, waits, and fails with Apple's log if not accepted.
 notarize_file() {
-  local file="$1" result status id
-  result="$(xcrun notarytool submit "$file" --key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
-            --wait --timeout 30m --output-format json)"
-  status="$(plutil -extract status raw - <<< "$result")"
+  local file="$1" result verdict id
+  result="$(xcrun notarytool submit "$file" "${notary_auth[@]}" --wait --timeout 30m --output-format json)"
+  verdict="$(plutil -extract status raw - <<< "$result")"
   id="$(plutil -extract id raw - <<< "$result")"
-  echo "Notarization of ${file:t}: $status (submission $id)" >&2
-  if [[ "$status" != "Accepted" ]]; then
-    xcrun notarytool log "$id" --key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" >&2 || true
+  echo "Notarization of ${file:t}: $verdict (submission $id)" >&2
+  if [[ "$verdict" != "Accepted" ]]; then
+    xcrun notarytool log "$id" "${notary_auth[@]}" >&2 || true
     exit 1
   fi
 }
