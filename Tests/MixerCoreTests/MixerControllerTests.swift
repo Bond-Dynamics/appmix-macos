@@ -156,3 +156,36 @@ struct MixerControllerTests {
         #expect(mixer.error(for: spotifyKey) == "boom")
     }
 }
+
+@MainActor
+struct IdleAppVisibilityTests {
+    private let daemon = AudioProcess(objectID: 30, pid: 30, bundleID: "com.apple.systemsoundserverd", name: "systemsoundserverd", isPlaying: false, isRecording: false)
+
+    private func mixer(showIdle: Bool) -> MixerController {
+        let mixer = MixerController(factory: FakeRouteFactory(), ownPID: 1, isUserFacing: { $0.key == spotifyKey })
+        mixer.showIdleApps = showIdle
+        mixer.update(snapshot(spotify(playing: false) + [daemon]))
+        return mixer
+    }
+
+    @Test func idleRegularAppIsShown() {
+        #expect(mixer(showIdle: true).apps.map(\.key) == [spotifyKey])
+    }
+
+    @Test func idleBackgroundProcessStaysHidden() {
+        #expect(!mixer(showIdle: true).apps.contains { $0.key == "com.apple.systemsoundserverd" })
+    }
+
+    @Test func toggleOffRestoresPlayingOnly() {
+        #expect(mixer(showIdle: false).apps.isEmpty)
+    }
+
+    @Test func idleAppCanBeSetUpBeforeItPlays() {
+        let factory = FakeRouteFactory()
+        let mixer = MixerController(factory: factory, ownPID: 1, isUserFacing: { _ in true })
+        mixer.update(snapshot(spotify(playing: false)))
+        mixer.setVolume(30, for: spotifyKey)
+        #expect(factory.made.count == 1)
+        #expect(factory.made[0].controls.volumePercent == 30)
+    }
+}

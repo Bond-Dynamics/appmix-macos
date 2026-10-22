@@ -23,7 +23,7 @@ struct AppRowView: View {
             Image(nsImage: model.icon(for: row))
             Text(row.name).lineLimit(1).truncationMode(.tail)
             if !row.isPlaying {
-                Text("paused").font(.caption2).foregroundStyle(.secondary)
+                Text("not playing").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 4)
             outputPicker

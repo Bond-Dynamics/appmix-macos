@@ -31,6 +31,9 @@ public enum AppGrouping {
         return cut.map { components[..<$0].joined(separator: ".") } ?? process.bundleID
     }
 
+    /// False for keys of processes without a bundle ID (`process:<name>`).
+    public static func isBundleKey(_ key: String) -> Bool { !key.hasPrefix(unbundledPrefix) }
+
     public static func group(_ processes: [AudioProcess]) -> [AudioApp] {
         Dictionary(grouping: processes, by: key(for:))
             .map { AudioApp(key: $0.key, processes: $0.value.sorted { $0.objectID < $1.objectID }) }
