@@ -46,17 +46,31 @@ public final class MixerController {
     private var routes: [String: ActiveRoute] = [:]
     private var errors: [String: String] = [:]
 
-    public init(factory: RouteFactory, store: SettingsStore = EphemeralSettingsStore(), ownPID: pid_t = getpid()) {
+    /// Whether a silent app is still worth a row (a Dock app, not a background service). Injected because
+    /// that is an AppKit question; the default shows no idle apps.
+    private let isUserFacing: @MainActor (AudioApp) -> Bool
+
+    /// Show user-facing apps that are connected to audio but silent, as the Windows mixer does.
+    public var showIdleApps = false
+
+    public init(
+        factory: RouteFactory,
+        store: SettingsStore = EphemeralSettingsStore(),
+        ownPID: pid_t = getpid(),
+        isUserFacing: @escaping @MainActor (AudioApp) -> Bool = { _ in false }
+    ) {
         self.factory = factory
         self.store = store
         self.ownPID = ownPID
+        self.isUserFacing = isUserFacing
         settingsByKey = store.load().filter { $0.value.needsTap }
     }
 
-    /// Apps worth showing: playing now, or ones the user has changed.
+    /// Apps worth showing: playing now, ones the user has changed, and (with `showIdleApps`) silent
+    /// user-facing apps.
     public var apps: [AudioApp] {
         appsByKey.values
-            .filter { $0.isPlaying || settingsByKey[$0.key] != nil }
+            .filter { $0.isPlaying || settingsByKey[$0.key] != nil || (showIdleApps && isUserFacing($0)) }
             .sorted { $0.key < $1.key }
     }
 
