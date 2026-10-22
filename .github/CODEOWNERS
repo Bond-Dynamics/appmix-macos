@@ -1,0 +1,7 @@
+# Maintainers are requested for review on every pull request.
+* @bond-dynamics-inc
+
+# Release, CI and signing paths: changes here can affect what users download.
+/.github/ @bond-dynamics-inc
+/scripts/ @bond-dynamics-inc
+/VERSION @bond-dynamics-inc

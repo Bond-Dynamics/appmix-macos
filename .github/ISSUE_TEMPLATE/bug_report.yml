@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in AppMix doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For a security problem, please use [private vulnerability reporting](https://github.com/Bond-Dynamics/appmix-macos/security/advisories/new) instead of this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+      placeholder: I moved Spotify's slider to 30%, but its volume didn't change.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start playing in Spotify
+        2. Open AppMix from the menu bar
+        3. Move Spotify's slider
+    validations:
+      required: true
+  - type: input
+    id: appmix-version
+    attributes:
+      label: AppMix version
+      description: From the release you installed, or the commit if you built it yourself.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.4 (Apple Silicon)"
+    validations:
+      required: true
+  - type: input
+    id: apps-devices
+    attributes:
+      label: Apps and output devices involved
+      placeholder: "Spotify → AirPods Pro"
+  - type: textarea
+    id: appmix-list
+    attributes:
+      label: Output of `appmix list` (optional)
+      description: If you can build from source, `swift run appmix list` shows what AppMix can see.
+      render: text
+  - type: checkboxes
+    id: permission
+    attributes:
+      label: Audio permission
+      options:
+        - label: AppMix is allowed under System Settings → Privacy & Security → Screen & System Audio Recording.
