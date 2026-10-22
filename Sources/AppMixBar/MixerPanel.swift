@@ -18,6 +18,8 @@ struct MixerPanel: View {
                 ForEach(model.rows) { AppRowView(row: $0, model: model) }
             }
             Divider()
+            DeviceSectionView(model: model)
+            Divider()
             footer
         }
         .padding(14)

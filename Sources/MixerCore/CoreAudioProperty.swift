@@ -61,6 +61,34 @@ enum CoreAudioProperty {
         return value
     }
 
+    static func has(
+        _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> Bool {
+        var addr = address(selector, scope: scope)
+        return AudioObjectHasProperty(object, &addr)
+    }
+
+    static func isSettable(
+        _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> Bool {
+        var addr = address(selector, scope: scope)
+        var settable: DarwinBoolean = false
+        return AudioObjectIsPropertySettable(object, &addr, &settable) == noErr && settable.boolValue
+    }
+
+    static func set<T: BitwiseCopyable>(
+        _ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ value: T,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) throws {
+        var addr = address(selector, scope: scope)
+        try check(
+            withUnsafeBytes(of: value) { AudioObjectSetPropertyData(object, &addr, 0, nil, UInt32($0.count), $0.baseAddress!) },
+            "write '\(selector)' on \(object)"
+        )
+    }
+
     static func string(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) throws -> String {
         var addr = address(selector)
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
