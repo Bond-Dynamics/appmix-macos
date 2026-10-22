@@ -1,6 +1,7 @@
 import AppKit
 import MixerCore
 import Observation
+import os
 
 struct AppRowModel: Identifiable, Equatable {
     let id: String
@@ -18,6 +19,8 @@ struct AppRowModel: Identifiable, Equatable {
 @Observable
 final class MixerViewModel {
     private static let meterInterval = 0.1
+    private static let showIdleAppsKey = "showIdleApps"
+    private static let log = Logger(subsystem: "local.appmix", category: "panel")
     /// Opens Privacy & Security at Screen & System Audio Recording.
     private static let permissionSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
 
@@ -26,12 +29,23 @@ final class MixerViewModel {
     private(set) var defaultOutputName = ""
     /// Linear output peak per routed app, refreshed while the panel is open.
     private(set) var levels: [String: Float] = [:]
+    /// Keep a row for silent Dock apps too, like the Windows mixer. Remembered across launches.
+    private(set) var showIdleApps: Bool
 
-    @ObservationIgnored private let controller = MixerController(factory: TapRouteFactory(), store: UserDefaultsSettingsStore())
+    @ObservationIgnored private let userFacing: UserFacingApps
+    @ObservationIgnored private let controller: MixerController
     @ObservationIgnored private var monitor: SystemAudioMonitor?
     @ObservationIgnored private var meterTimer: Timer?
 
     init() {
+        let userFacing = UserFacingApps()
+        self.userFacing = userFacing
+        controller = MixerController(
+            factory: TapRouteFactory(), store: UserDefaultsSettingsStore(),
+            isUserFacing: { userFacing.contains($0) }
+        )
+        showIdleApps = UserDefaults.standard.object(forKey: Self.showIdleAppsKey) as? Bool ?? true
+        controller.showIdleApps = showIdleApps
         let monitor = SystemAudioMonitor { [weak self] snapshot in
             Task { @MainActor in self?.apply(snapshot) }
         }
@@ -43,6 +57,12 @@ final class MixerViewModel {
     func setMuted(_ muted: Bool, for key: String) { edit { controller.setMuted(muted, for: key) } }
     func setOutput(_ uid: String?, for key: String) { edit { controller.setOutput(uid, for: key) } }
     func reset(_ key: String) { edit { controller.reset(key) } }
+
+    func setShowIdleApps(_ show: Bool) {
+        showIdleApps = show
+        UserDefaults.standard.set(show, forKey: Self.showIdleAppsKey)
+        edit { controller.showIdleApps = show }
+    }
 
     func icon(for row: AppRowModel) -> NSImage { AppIdentity.icon(key: row.id, pid: row.mainPID) }
 
@@ -69,8 +89,11 @@ final class MixerViewModel {
     }
 
     private func apply(_ snapshot: AudioSnapshot) {
+        userFacing.refresh(from: snapshot.processes)
         controller.update(snapshot)
         rebuildRows()
+        let names = rows.map { "\($0.name)\($0.isPlaying ? "" : " (not playing)")" }.joined(separator: ", ")
+        Self.log.info("Rows (show idle \(self.showIdleApps, privacy: .public)): \(names, privacy: .public)")
     }
 
     private func edit(_ change: () -> Void) {
