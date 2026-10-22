@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest an idea for AppMix
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation or problem, rather than the solution.
+      placeholder: When a Discord call starts, I have to turn Spotify down by hand every time.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like AppMix to do?
+      placeholder: Automatically lower music while a voice app is active.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
