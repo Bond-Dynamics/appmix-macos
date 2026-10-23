@@ -43,6 +43,9 @@ jobs:
         run: swift build
       - name: Test
         run: swift test
+      - name: Check build numbers
+        # Sparkle compares CFBundleVersion, which build-number.sh derives from VERSION (BOND-224).
+        run: scripts/release/test-build-number.sh
 
   ci-success:
     name: CI Success
