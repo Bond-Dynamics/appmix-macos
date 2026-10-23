@@ -12,9 +12,15 @@
 # Re-running on an unchanged `release` is a no-op, not a failure: the cheap `check` job on Linux
 # decides, and the macOS `publish` job only starts when there is a new version to build.
 #
+# Since BOND-224 the release also carries Sparkle's update: `AppMix-<VERSION>.zip` and `appcast.xml`.
+# Installed copies read the feed at releases/latest/download/appcast.xml, so publishing this release
+# is what offers the update to everyone.
+#
 # Secrets (repo-level; values never in the repo):
 #   APPLE_DEVID_CERT_P12_BASE64, APPLE_DEVID_CERT_PASSWORD   Developer ID Application cert + key
 #   APPLE_ASC_KEY_ID, APPLE_ASC_ISSUER_ID, APPLE_ASC_PRIVATE_KEY   App Store Connect API key (notarytool)
+#   SPARKLE_ED_PRIVATE_KEY   EdDSA key that signs updates; master copy in GCP Secret Manager
+#                            (bond-40bea, APPMIX_SPARKLE_ED_PRIVATE_KEY). Its public half is in Info.plist.
 
 name: Release Tag
 
@@ -62,8 +68,10 @@ jobs:
           raw="$(tr -d '[:space:]' < VERSION)"
           # Anchored, and no leading `v`: the file holds the bare semver and this workflow
           # owns the prefix, so the tag shape cannot drift with whoever edits the file.
-          if ! printf '%s' "$raw" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::VERSION is '$raw', which is not a semver this workflow will tag."
+          # No pre-release suffix: every published release becomes the update feed for all
+          # users (BOND-224), and a beta would share its final release's build number.
+          if ! printf '%s' "$raw" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION is '$raw', which is not a release version (like 0.5.0) this workflow will tag."
             exit 1
           fi
           echo "version=$raw" >> "$GITHUB_OUTPUT"
@@ -82,6 +90,44 @@ jobs:
             echo "already=false" >> "$GITHUB_OUTPUT"
             echo "$tag is new."
           fi
+
+  # A dry run also rehearses the build on this runner's toolchain: universal app, embedded Sparkle,
+  # DMG, and an update signed with the CI key and checked against the app's SUPublicEDKey (BOND-224).
+  # Ad-hoc signed and not notarized, so it needs no Apple secrets, and it tags and publishes nothing.
+  rehearse:
+    name: Rehearse the release build (dry run)
+    needs: check
+    if: inputs.dry_run == true
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode (Swift toolchain)
+        run: |
+          set -euo pipefail
+          APP=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "${APP:-}" ] || { echo "::error::No Xcode 16 on this runner"; exit 1; }
+          sudo xcode-select -s "$APP"
+          swift --version
+
+      - name: Install dmgbuild
+        run: python3 -m pip install --quiet --break-system-packages "dmgbuild==1.6.5"
+
+      - name: Build the universal app and DMG (ad-hoc, not notarized)
+        env:
+          DMGBUILD: python3 -m dmgbuild
+        run: scripts/release/package-dmg.sh --skip-notarize
+
+      - name: Sign the update and check it against the app's key
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$SPARKLE_ED_PRIVATE_KEY" ] || { echo "::error::SPARKLE_ED_PRIVATE_KEY is not set on this repo."; exit 1; }
+          scripts/release/make-appcast.sh dist/AppMix.app
+          lipo -archs dist/AppMix.app/Contents/MacOS/AppMixBar
+          cat dist/appcast.xml
 
   publish:
     name: Build, notarize and release
@@ -163,13 +209,26 @@ jobs:
           DMGBUILD: python3 -m dmgbuild
         run: scripts/release/package-dmg.sh
 
+      - name: Sign the update and write the appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$SPARKLE_ED_PRIVATE_KEY" ] || { echo "::error::SPARKLE_ED_PRIVATE_KEY is not set on this repo."; exit 1; }
+          # package-dmg.sh leaves the stapled app in dist/; the update is made from that same app.
+          scripts/release/make-appcast.sh dist/AppMix.app
+
       - name: Tag and publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           dmg="dist/AppMix-$VERSION.dmg"
-          [ -f "$dmg" ] || { echo "::error::$dmg was not produced."; exit 1; }
+          update="dist/AppMix-$VERSION.zip"
+          appcast="dist/appcast.xml"
+          for file in "$dmg" "$update" "$appcast"; do
+            [ -f "$file" ] || { echo "::error::$file was not produced."; exit 1; }
+          done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Annotated, not lightweight: an annotated tag records who published and when.
@@ -184,8 +243,10 @@ jobs:
           4. The first time you change an app's volume, macOS asks to let AppMix record system audio. Allow it.
 
           Requires macOS 15 or later. Signed with Developer ID and notarized by Apple.
+
+          Already running AppMix 0.5.0 or later? It updates itself: use **Check for Updates…** in the panel.
           EOF
-          gh release create "$TAG" "$dmg" \
+          gh release create "$TAG" "$dmg" "$update" "$appcast" \
             --title "AppMix $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             --generate-notes \

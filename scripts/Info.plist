@@ -20,6 +20,12 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Bond-Dynamics/appmix-macos/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>WN51InSEH1F5d2fQrdYL16ZBXRsSnlZQw/CwNl6fCbM=</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>AppMix taps each app's audio so it can set that app's volume and send it to the output you choose.</string>
 </dict>
